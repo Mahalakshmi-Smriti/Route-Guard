@@ -8,6 +8,7 @@ import sqlite3
 import streamlit as st
 
 from config import DB
+from ui import chips, hero
 
 
 # ------------------------------------------------------------ database (users + saved trips)
@@ -69,13 +70,20 @@ def log_out():
 
 
 def auth_screen():
-    st.markdown('<div class="hero"><h1>🛡️ RouteGuard</h1><p>Know the route. Know the uncertainty.</p></div>',
-                unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 2.2, 1])
+    with mid:
+        _auth_body()
+    st.stop()
+
+
+def _auth_body():
+    hero("Know the route. Know the uncertainty.")
+    chips(["🚌 Bus · Metro · Train", "⏱️ Deadline-aware", "🔍 Honest data labels"])
     if st.session_state.get("fails", 0) >= 5:
         st.error("Too many failed attempts. Refresh the page and try again later.")
         st.stop()
 
-    t1, t2 = st.tabs(["Sign in", "Create account"])
+    t1, t2 = st.tabs(["🔑  Sign in", "✨  Create account"])
 
     with t1:
         with st.form("in"):
@@ -104,6 +112,5 @@ def auth_screen():
             else:
                 log_in_session(em2, nm.strip())  # sign the new user straight in
                 st.rerun()
-    st.stop()
 
 

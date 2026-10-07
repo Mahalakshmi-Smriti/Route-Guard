@@ -5,25 +5,30 @@ import math
 
 import streamlit as st
 
-st.set_page_config(page_title="RouteGuard", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="RouteGuard", page_icon="🛡️", layout="wide")
 
 from auth import db, init_db, auth_screen, log_out
 from config import ROAD, WEIGHTS
 from data import nearby, gtfs_options
 from planning import build_options, rank, transit
-from ui import CSS, card, legend, place_picker, transit_card
+from ui import (CSS, card, chips, hero, legend, place_picker, saved_card, section,
+                summary_strip, transit_card)
 
 
 # ------------------------------------------------------------ pages
 def planner_tab(pri, budget, ov):
-    pa = place_picker("From", "from")
-    pb = place_picker("To", "to")
-    c1, c2 = st.columns(2)
+    section("📍 Where are you going?")
+    p1, p2 = st.columns(2)
+    with p1:
+        pa = place_picker("From", "from")
+    with p2:
+        pb = place_picker("To", "to")
+    c1, c2, c3 = st.columns(3)
     day = c1.date_input("Date", dt.date.today())
     tm = c2.time_input("Leave at", dt.datetime.now().time().replace(second=0, microsecond=0))
-    deadline = st.number_input("Must arrive within (minutes)", 5, 240, 60)
+    deadline = c3.number_input("Must arrive within (min)", 5, 240, 60)
 
-    if st.button("Find routes", type="primary", use_container_width=True):
+    if st.button("🔎  Find safe routes", type="primary", use_container_width=True):
         if not (pa and pb):
             st.warning("Pick both places first.")
         else:
@@ -45,10 +50,11 @@ def planner_tab(pri, budget, ov):
     if not res:
         return
 
-    st.markdown(f"#### {html.escape(res['trip'])}")
+    section(f"🧭 {html.escape(res['trip'])}")
     st.caption(f"Deadline: {res['deadline']} min. Ranked by: safe options first, then score.")
+    summary_strip(res["ranked"], res["deadline"])
 
-    st.subheader("Ranked options")
+    section("🏆 Ranked options")
     if res["gtfs_err"]:
         st.warning(f"Timetable unavailable, so public transport is missing: {res['gtfs_err']}")
     if res["note"]:
@@ -57,7 +63,7 @@ def planner_tab(pri, budget, ov):
         st.info("Routing service did not respond. Try again.")
     for i, x in enumerate(res["ranked"]):
         st.markdown(card(x, i == 0), unsafe_allow_html=True)
-        if st.button("Save this route", key=f"save{i}"):
+        if st.button("⭐ Save this route", key=f"save{i}"):
             db("INSERT INTO saved(email,trip,route,score,fare,minutes) VALUES(?,?,?,?,?,?)",
                (st.session_state.user, res["trip"], x["name"], x["score"],
                 None if math.isnan(x["fare"]) else x["fare"], x["time"]))
@@ -65,7 +71,7 @@ def planner_tab(pri, budget, ov):
     if res["skipped"]:
         st.caption(f"{res['skipped']} timetable route(s) left out: the feed has no time data for them.")
 
-    st.subheader("Other transit on OpenStreetMap")
+    section("🗺️ Other transit on OpenStreetMap")
     if res["tr"] is None:
         st.info("OpenStreetMap did not respond. Try again.")
     elif not res["tr"]:
@@ -82,12 +88,8 @@ def saved_tab():
         return
     for rid, trip, route, score, fare, minutes, at in rows:
         fare_txt = "Unavailable" if fare is None else ("Free" if fare == 0 else f"₹{fare:.0f}")
-        st.markdown(
-            f'<div class="card"><div class="row"><b>{html.escape(trip)}</b>'
-            f'<span class="score">{score:.0f}</span></div>'
-            f'<div>{html.escape(route)} · {minutes:.0f} min · Fare: {fare_txt}</div>'
-            f'<div class="mu">Saved {html.escape(str(at))} UTC</div></div>', unsafe_allow_html=True)
-        if st.button("Delete", key=f"del{rid}"):
+        st.markdown(saved_card(trip, route, score, minutes, fare_txt, at), unsafe_allow_html=True)
+        if st.button("🗑️ Delete", key=f"del{rid}"):
             db("DELETE FROM saved WHERE id=? AND email=?", (rid, st.session_state.user))
             st.rerun()
 
@@ -98,11 +100,12 @@ def main():
     if "user" not in st.session_state:
         auth_screen()  # shows sign in / create account, then stops
 
-    st.markdown(f'<div class="hero"><h1>🛡️ RouteGuard</h1><p>Hi {html.escape(st.session_state.name)}</p></div>',
-                unsafe_allow_html=True)
+    hero(f"Welcome back, {html.escape(st.session_state.name)}. Know the route. Know the uncertainty.")
+    chips(["🟢 Verified = real data", "🟡 Estimated = calculated", "⚪ Unavailable = never guessed"])
 
     with st.sidebar:
-        st.header("Settings")
+        st.markdown("### 🛡️ RouteGuard")
+        st.header("⚙️ Settings")
         st.caption(f"Signed in as {st.session_state.user}")
         pri = st.selectbox("Priority", list(WEIGHTS))
         budget = st.number_input("Budget (₹)", 10, 2000, 200)
@@ -111,12 +114,11 @@ def main():
               "Bus": st.number_input("Bus fare (₹)", 0, 500, 0),
               "Metro": st.number_input("Metro fare (₹)", 0, 500, 0),
               "Train": st.number_input("Train fare (₹)", 0, 500, 0)}
-        if st.button("Sign out", use_container_width=True):
+        if st.button("🚪 Sign out", use_container_width=True):
             log_out()
 
-    st.caption("Every number is labelled Verified, Estimated or Unavailable.")
     legend()
-    t1, t2 = st.tabs(["Plan trip", "Saved trips"])
+    t1, t2 = st.tabs(["🧭  Plan trip", "⭐  Saved trips"])
     with t1:
         planner_tab(pri, budget, ov)
     with t2:
