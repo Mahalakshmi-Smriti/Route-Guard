@@ -109,7 +109,10 @@ def auth_screen():
         p1, p2 = st.text_input("Password ", type="password"), st.text_input("Confirm password", type="password")
         if st.form_submit_button("Create account", use_container_width=True):
             err = "Passwords do not match." if p1 != p2 else sign_up(nm, em2, p1)
-            st.error(err) if err else st.success("Account created. Open the Sign in tab.")
+            if err:
+                st.error(err)
+            else:
+                st.success("Account created. Open the Sign in tab.")
     st.stop()
 
 
@@ -245,5 +248,7 @@ with tab2:
 with tab3:
     mine = pd.DataFrame(db("SELECT at,start,route,score,fare,minutes FROM saved WHERE email=? ORDER BY id DESC",
                            (st.session_state.user,)), columns=["Saved at", "Start", "Route", "Score", "Fare", "Minutes"])
-    st.dataframe(mine, hide_index=True, use_container_width=True) if len(mine) else st.caption("No saved trips yet.")
-  
+    if len(mine):
+        st.dataframe(mine, hide_index=True, use_container_width=True)
+    else:
+        st.caption("No saved trips yet.")
