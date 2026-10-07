@@ -7,9 +7,19 @@ Sources (free, no API key):
   Timetable ..... Chennai GTFS (scheduled, not live)
 Not free anywhere: live bus/metro ETA, official fares, bike-taxi availability.
 Those are shown as "Unavailable" unless the feed has them or YOU type a fare in the sidebar.
+
+Needs: pip install streamlit pandas numpy requests
 """
 import datetime as dt
-import hashlib, hmac, html, math, os, re, sqlite3, zipfile
+import hashlib
+import hmac
+import html
+import math
+import os
+import re
+import sqlite3
+import zipfile
+
 import numpy as np
 import pandas as pd
 import requests
@@ -17,7 +27,8 @@ import streamlit as st
 
 st.set_page_config(page_title="RouteGuard", page_icon="🛡️", layout="centered")
 
-DB = "routeguard.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(BASE_DIR, "routeguard.db")
 UA = {"User-Agent": "RouteGuard-student-app/3.0"}
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 OVERPASS = ["https://overpass-api.de/api/interpreter",
@@ -27,10 +38,10 @@ FOOT = "https://routing.openstreetmap.de/routed-foot/route/v1/driving/"
 BIKE = "https://routing.openstreetmap.de/routed-bike/route/v1/driving/"
 ROAD = "Auto / Cab / Bike taxi"
 NAN = float("nan")
-MAX_WALK_MIN = 15          # longest walk to a stop that we accept
+MAX_WALK_MIN = 15  # longest walk to a stop that we accept
 
 GTFS_URL = "https://raw.githubusercontent.com/ungalsoththu/ChennaiGTFS/main/data/chennai-unified-gtfs.zip"
-GTFS_FILE = "chennai-gtfs.zip"      # downloaded once, then reused
+GTFS_FILE = os.path.join(BASE_DIR, "chennai-gtfs.zip")  # downloaded once, then reused
 RTYPE = {"0": "Tram", "1": "Metro", "2": "Train", "3": "Bus"}
 
 WEIGHTS = {"Balanced": dict(cost=.30, time=.40, buf=.30),
@@ -39,15 +50,17 @@ WEIGHTS = {"Balanced": dict(cost=.30, time=.40, buf=.30),
            "Most spare time": dict(cost=.20, time=.20, buf=.60)}
 
 
-# ------------------------------------------------------------ database (users + saved trips only)
+# ------------------------------------------------------------ database (users + saved trips)
 def db(sql, args=()):
     con = sqlite3.connect(DB)
-    cur = con.cursor()
-    cur.execute(sql, args)
-    rows = cur.fetchall()
-    con.commit()
-    con.close()
-    return rows
+    try:
+        cur = con.cursor()
+        cur.execute(sql, args)
+        rows = cur.fetchall()
+        con.commit()
+        return rows
+    finally:
+        con.close()
 
 
 def init_db():
@@ -62,6 +75,7 @@ def hp(pw, salt):
 
 
 def sign_up(name, email, pw):
+    """Returns an error message, or None when the account was created."""
     email = email.strip().lower()
     if not name.strip():
         return "Enter your name."
@@ -77,10 +91,21 @@ def sign_up(name, email, pw):
 
 
 def sign_in(email, pw):
+    """Returns the user's name on success, else None."""
     row = db("SELECT name,salt,pw FROM users WHERE email=?", (email.strip().lower(),))
     if row and hmac.compare_digest(row[0][2], hp(pw, bytes.fromhex(row[0][1]))):
         return row[0][0]
     return None
+
+
+def log_in_session(email, name):
+    st.session_state.clear()
+    st.session_state.update(user=email.strip().lower(), name=name, fails=0)
+
+
+def log_out():
+    st.session_state.clear()
+    st.rerun()
 
 
 def auth_screen():
@@ -89,25 +114,36 @@ def auth_screen():
     if st.session_state.get("fails", 0) >= 5:
         st.error("Too many failed attempts. Refresh the page and try again later.")
         st.stop()
+
     t1, t2 = st.tabs(["Sign in", "Create account"])
-    with t1, st.form("in"):
-        em, pw = st.text_input("Email"), st.text_input("Password", type="password")
-        if st.form_submit_button("Sign in", use_container_width=True):
+
+    with t1:
+        with st.form("in"):
+            em = st.text_input("Email")
+            pw = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
+        if submitted:
             name = sign_in(em, pw)
             if name:
-                st.session_state.update(user=em.strip().lower(), name=name, fails=0)
+                log_in_session(em, name)
                 st.rerun()
             st.session_state.fails = st.session_state.get("fails", 0) + 1
             st.error("Incorrect email or password.")
-    with t2, st.form("up"):
-        nm, em2 = st.text_input("Full name"), st.text_input("Email ")
-        p1, p2 = st.text_input("Password ", type="password"), st.text_input("Confirm password", type="password")
-        if st.form_submit_button("Create account", use_container_width=True):
+
+    with t2:
+        with st.form("up"):
+            nm = st.text_input("Full name")
+            em2 = st.text_input("Email ")
+            p1 = st.text_input("Password ", type="password")
+            p2 = st.text_input("Confirm password", type="password")
+            created = st.form_submit_button("Create account", use_container_width=True)
+        if created:
             err = "Passwords do not match." if p1 != p2 else sign_up(nm, em2, p1)
             if err:
                 st.error(err)
             else:
-                st.success("Account created. Open the Sign in tab.")
+                log_in_session(em2, nm.strip())  # sign the new user straight in
+                st.rerun()
     st.stop()
 
 
@@ -143,7 +179,7 @@ def _route(base, a, b):
     if j.get("code") != "Ok":
         raise ValueError("no route")
     x = j["routes"][0]
-    return x["distance"] / 1000, x["duration"] / 60          # km, minutes
+    return x["distance"] / 1000, x["duration"] / 60  # km, minutes
 
 
 def road(a, b, base=CAR):
@@ -189,7 +225,8 @@ def _nearby(lat, lon, r):
         t = e.get("tags", {})
         k = kind_of(t)
         if k:
-            out[k].append(dict(name=t.get("name") or "(unnamed stop)", m=round(hav(lat, lon, e["lat"], e["lon"]) * 1000),
+            out[k].append(dict(name=t.get("name") or "(unnamed stop)",
+                               m=round(hav(lat, lon, e["lat"], e["lon"]) * 1000),
                                lat=e["lat"], lon=e["lon"]))
     for k in out:
         out[k].sort(key=lambda x: x["m"])
@@ -335,7 +372,7 @@ def gtfs_options(A, B, depart, day, walk_m=900):
     st_["seq"] = pd.to_numeric(st_.stop_sequence, errors="coerce")
     j = st_[st_.stop_id.isin(sa.stop_id)].merge(st_[st_.stop_id.isin(sb.stop_id)], on="trip_id",
                                                 suffixes=("_a", "_b"))
-    j = j[j.seq_a < j.seq_b]                      # same trip, boarding stop comes BEFORE the alighting stop
+    j = j[j.seq_a < j.seq_b]  # same trip, boarding stop comes BEFORE the alighting stop
     if j.empty:
         return [], ""
     j = j.merge(T["trips"].reindex(columns=["trip_id", "route_id", "service_id", "trip_headsign"]), on="trip_id")
@@ -370,10 +407,10 @@ def gtfs_options(A, B, depart, day, walk_m=900):
                  mb=round(wb[0] * 1000), total=None, ride=None, wait=None, nxt=[], head_min=None,
                  fare=gtfs_fare(T, rid))
         if not g.empty:
-            ready = depart + wa[1] * 60                     # time you reach the boarding stop
+            ready = depart + wa[1] * 60  # time you reach the boarding stop
             nxt = np.sort(g.dep[g.dep >= ready].unique())
             if len(nxt) == 0:
-                continue                                    # no more departures after you arrive
+                continue  # no more departures after you arrive
             e["ride"] = float((g.arr - g.dep).median() / 60)
             e["wait"] = float((nxt[0] - ready) / 60)
             e["total"] = wa[1] + e["wait"] + e["ride"] + wb[1]
@@ -387,7 +424,7 @@ def gtfs_options(A, B, depart, day, walk_m=900):
 
 # ------------------------------------------------------------ planning
 def plan(a, b, deadline, budget, pri, ov):
-    """Ranks only options that have REAL time data (walk, cycle, road)."""
+    """Ranks only options that have REAL time data (walk, cycle, road). Returns a list of dicts."""
     foot, bike, car = road(a, b, FOOT), road(a, b, BIKE), road(a, b, CAR)
     rows = []
     if foot and foot[0] <= 5:
@@ -401,19 +438,20 @@ def plan(a, b, deadline, budget, pri, ov):
     if not rows:
         return None
     df = pd.DataFrame(rows, columns=["route", "time", "fare", "fs", "km", "detail"])
-    df["buf"] = deadline - df.time
-    tm = df.time
-    c = pd.DataFrame({"cost": (1 - df.fare / budget).clip(0, 1),
+    df["buf"] = deadline - df["time"]
+    tm = df["time"]
+    c = pd.DataFrame({"cost": (1 - df["fare"] / budget).clip(0, 1),
                       "time": 1 - (tm - tm.min()) / (tm.max() - tm.min() + 1e-9),
-                      "buf": (df.buf / 30).clip(0, 1)})
+                      "buf": (df["buf"] / 30).clip(0, 1)})
     w = pd.Series(WEIGHTS[pri])
 
     def score(row):
         ok = row.notna()
-        return float((row[ok] * w[ok]).sum() / w[ok].sum() * 100)   # missing fare is left out, not guessed
+        return float((row[ok] * w[ok]).sum() / w[ok].sum() * 100)  # missing fare is left out, not guessed
 
     df["score"] = c.apply(score, axis=1)
-    return df.sort_values("score", ascending=False).reset_index(drop=True)
+    df = df.sort_values("score", ascending=False).reset_index(drop=True)
+    return df.to_dict("records")
 
 
 def transit(a, b, na, nb, ov):
@@ -438,14 +476,14 @@ def pill(kind, text):
 
 
 def card(x, top):
-    fare = ("Free" if x.fs == "FREE" else f"₹{x.fare:.0f}" if x.fs == "VERIFIED" else "Unavailable")
-    fp = (pill("REAL", "Free") if x.fs == "FREE" else pill("VERIFIED", "Entered by you") if x.fs == "VERIFIED"
-          else pill("UNAVAILABLE", "Unavailable"))
-    return (f'<div class="card{" top" if top else ""}"><div class="row"><b>{html.escape(x.route)}</b>'
-            f'<span class="score">{x.score:.0f}</span></div>'
-            f'<div class="row"><span>{x.time:.0f} min · {x.km:.1f} km</span>{pill("REAL", "Real route")}</div>'
+    fare = "Free" if x["fs"] == "FREE" else f"₹{x['fare']:.0f}" if x["fs"] == "VERIFIED" else "Unavailable"
+    fp = (pill("REAL", "Free") if x["fs"] == "FREE" else pill("VERIFIED", "Entered by you")
+          if x["fs"] == "VERIFIED" else pill("UNAVAILABLE", "Unavailable"))
+    return (f'<div class="card{" top" if top else ""}"><div class="row"><b>{html.escape(x["route"])}</b>'
+            f'<span class="score">{x["score"]:.0f}</span></div>'
+            f'<div class="row"><span>{x["time"]:.0f} min · {x["km"]:.1f} km</span>{pill("REAL", "Real route")}</div>'
             f'<div class="row"><span>Fare: {fare}</span>{fp}</div>'
-            f'<div class="mu">{html.escape(x.detail)}</div></div>')
+            f'<div class="mu">{html.escape(x["detail"])}</div></div>')
 
 
 def transit_card(t):
@@ -453,17 +491,4 @@ def transit_card(t):
     fp = pill("VERIFIED", f"₹{fare:.0f} entered by you") if fare > 0 else pill("UNAVAILABLE", "Fare unavailable")
     refs = ", ".join(html.escape(str(r)) for r in t["refs"])
     return (f'<div class="card"><div class="row"><b>{t["mode"]}</b>{fp}</div>'
-            f'<div>Route(s) serving both ends: <b>{refs}</b></div>'
-            f'<div class="mu">Walk {t["s"]["min"]:.0f} min ({t["s"]["m"]} m) to <b>{html.escape(t["s"]["name"])}</b> '
-            f'→ ride → get off near <b>{html.escape(t["e"]["name"])}</b>, walk {t["e"]["min"]:.0f} min '
-            f'({t["e"]["m"]} m)</div>'
-            f'<div class="row"><span class="mu">Walking total: {t["s"]["min"] + t["e"]["min"]:.0f} min</span>'
-            f'{pill("UNAVAILABLE", "Ride time / live ETA unavailable")}</div></div>')
-
-
-def gtfs_card(t, ov):
-    if t["fare"]:
-        lo, hi = t["fare"]
-        fp = pill("SCHED", f"₹{lo:.0f}" + (f"–₹{hi:.0f}" if hi > lo else "") + " from feed")
-    elif ov.get(t["mode"], 0) > 0:
-        fp = pill("VERIFIED", f"₹{ov[t['mode']]
+            f'<div>Route(s) servi
