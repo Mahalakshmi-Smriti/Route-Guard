@@ -3,7 +3,7 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(BASE_DIR, "routeguard.db")
-UA = {"User-Agent": "RouteGuard-student-app/3.0"}
+UA = {"User-Agent": "RouteGuard-student-app/4.0"}
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 OVERPASS = ["https://overpass-api.de/api/interpreter",
             "https://overpass.kumi.systems/api/interpreter"]
@@ -18,7 +18,25 @@ GTFS_URL = "https://raw.githubusercontent.com/ungalsoththu/ChennaiGTFS/main/data
 GTFS_FILE = os.path.join(BASE_DIR, "chennai-gtfs.zip")  # downloaded once, then reused
 RTYPE = {"0": "Tram", "1": "Metro", "2": "Train", "3": "Bus"}
 
-WEIGHTS = {"Balanced": dict(cost=.30, time=.40, buf=.30),
-           "Cheapest": dict(cost=.60, time=.20, buf=.20),
-           "Fastest": dict(cost=.10, time=.60, buf=.30),
-           "Most spare time": dict(cost=.20, time=.20, buf=.60)}
+# The three honesty labels used on every number in the app
+V, E, U = "Verified", "Estimated", "Unavailable"
+LEGEND = {V: "straight from a data source (timetable, map) or typed by you",
+          E: "calculated by the app or a routing engine, so it can be wrong",
+          U: "no data exists, so the app does not guess"}
+
+# How much each factor matters for each priority (each row adds up to 1)
+WEIGHTS = {"Balanced": dict(cost=.25, time=.25, buf=.25, rel=.25),
+           "Cheapest": dict(cost=.55, time=.15, buf=.15, rel=.15),
+           "Fastest": dict(cost=.10, time=.55, buf=.20, rel=.15),
+           "Most spare time": dict(cost=.15, time=.15, buf=.55, rel=.15),
+           "Most reliable": dict(cost=.10, time=.15, buf=.20, rel=.55)}
+
+# ASSUMPTIONS (not measured). Free live delay data does not exist, so these are
+# rough starting points. Change them if you have better numbers.
+# REL_BASE = how dependable the mode is, out of 100.
+# DELAY    = extra share of the moving time that delays could add.
+REL_BASE = {"Walk": 95, "Cycle": 90, ROAD: 65, "Metro": 90, "Train": 80,
+            "Tram": 75, "Bus": 65, "Transit": 65}
+DELAY = {"Walk": .05, "Cycle": .10, ROAD: .50, "Metro": .10, "Train": .25,
+         "Tram": .25, "Bus": .40, "Transit": .40}
+HEADWAY_PENALTY = 0.8   # reliability points lost per minute between vehicles

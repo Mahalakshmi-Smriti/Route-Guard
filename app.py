@@ -10,7 +10,8 @@ st.set_page_config(page_title="RouteGuard", page_icon="🛡️", layout="centere
 from auth import db, init_db, auth_screen, log_out
 from config import ROAD, WEIGHTS
 from data import nearby, gtfs_options
-from planning import (plan, transit, card, transit_card, gtfs_card, CSS, place_picker)
+from planning import build_options, rank, transit
+from ui import CSS, card, legend, place_picker, transit_card
 
 
 # ------------------------------------------------------------ pages
@@ -29,13 +30,14 @@ def planner_tab(pri, budget, ov):
             a, b = pa[0], pb[0]
             depart = tm.hour * 3600 + tm.minute * 60
             with st.spinner("Finding routes..."):
-                res = dict(trip=f"{pa[1].split(',')[0]} → {pb[1].split(',')[0]}",
-                           road=plan(a, b, deadline, budget, pri, ov))
+                res = dict(trip=f"{pa[1].split(',')[0]} → {pb[1].split(',')[0]}", deadline=deadline)
                 try:
-                    res["gtfs"], res["gtfs_note"] = gtfs_options(a, b, depart, day)
+                    gtfs, res["note"] = gtfs_options(a, b, depart, day)
                     res["gtfs_err"] = None
                 except Exception as e:
-                    res["gtfs"], res["gtfs_note"], res["gtfs_err"] = [], "", str(e)
+                    gtfs, res["note"], res["gtfs_err"] = [], "", str(e)
+                opts, res["skipped"] = build_options(a, b, ov, gtfs)
+                res["ranked"] = rank(opts, deadline, budget, pri)
                 res["tr"] = transit(a, b, nearby(*a), nearby(*b), ov)
             st.session_state.results = res  # kept so Save buttons still work after the rerun
 
@@ -44,29 +46,24 @@ def planner_tab(pri, budget, ov):
         return
 
     st.markdown(f"#### {html.escape(res['trip'])}")
+    st.caption(f"Deadline: {res['deadline']} min. Ranked by: safe options first, then score.")
 
-    st.subheader("Walk / Cycle / Road")
-    if res["road"] is None:
-        st.info("Routing service did not respond. Try again.")
-    else:
-        for i, x in enumerate(res["road"]):
-            st.markdown(card(x, i == 0), unsafe_allow_html=True)
-            if st.button("Save this route", key=f"save{i}"):
-                db("INSERT INTO saved(email,trip,route,score,fare,minutes) VALUES(?,?,?,?,?,?)",
-                   (st.session_state.user, res["trip"], x["route"], x["score"],
-                    None if math.isnan(x["fare"]) else x["fare"], x["time"]))
-                st.success("Saved. See the Saved trips tab.")
-
-    st.subheader("Scheduled public transport (Chennai GTFS)")
+    st.subheader("Ranked options")
     if res["gtfs_err"]:
-        st.warning(f"Timetable unavailable: {res['gtfs_err']}")
-    else:
-        if res["gtfs_note"]:
-            st.caption(res["gtfs_note"])
-        if not res["gtfs"]:
-            st.info("No scheduled bus/metro/train found between these two places.")
-        for t in res["gtfs"]:
-            st.markdown(gtfs_card(t, ov), unsafe_allow_html=True)
+        st.warning(f"Timetable unavailable, so public transport is missing: {res['gtfs_err']}")
+    if res["note"]:
+        st.caption(res["note"])
+    if not res["ranked"]:
+        st.info("Routing service did not respond. Try again.")
+    for i, x in enumerate(res["ranked"]):
+        st.markdown(card(x, i == 0), unsafe_allow_html=True)
+        if st.button("Save this route", key=f"save{i}"):
+            db("INSERT INTO saved(email,trip,route,score,fare,minutes) VALUES(?,?,?,?,?,?)",
+               (st.session_state.user, res["trip"], x["name"], x["score"],
+                None if math.isnan(x["fare"]) else x["fare"], x["time"]))
+            st.success("Saved. See the Saved trips tab.")
+    if res["skipped"]:
+        st.caption(f"{res['skipped']} timetable route(s) left out: the feed has no time data for them.")
 
     st.subheader("Other transit on OpenStreetMap")
     if res["tr"] is None:
@@ -117,6 +114,8 @@ def main():
         if st.button("Sign out", use_container_width=True):
             log_out()
 
+    st.caption("Every number is labelled Verified, Estimated or Unavailable.")
+    legend()
     t1, t2 = st.tabs(["Plan trip", "Saved trips"])
     with t1:
         planner_tab(pri, budget, ov)
